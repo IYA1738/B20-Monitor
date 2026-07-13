@@ -1,6 +1,6 @@
 app:
- name: "token-discover"
- env: "local"
+  name: "token-discover"
+  env: "local"
 
 idgen:
   worker_id: 1
@@ -8,7 +8,7 @@ idgen:
   max_clock_backward_ms: 5
 
 db:
-  dsn: "host=localhost user=postgres password=123456 dbname=token_discover port=5432 sslmode=disable TimeZone=Asia/Shanghai"
+  dsn: "host=127.0.0.1 user=postgres password=123456 dbname=token_discover port=5432 sslmode=disable TimeZone=Asia/Shanghai"
   max_open_conns: 80
   max_idle_conns: 40
   conn_max_lifetime_seconds: 1800
@@ -22,67 +22,107 @@ redis:
   db: 0
   pool_size: 50
   min_idle_conns: 10
-  dial_timeout_seconds: 5 # redis连接超时时间
-  read_timeout_seconds: 3 # 读取redis响应超时时间
-  write_timeout_seconds: 3 # 写redis命令超时时间
+  dial_timeout_seconds: 5
+  read_timeout_seconds: 3
+  write_timeout_seconds: 3
 
 elasticsearch:
   addresses:
-    - "http://localhost:9200" #es节点地址
+    - "http://localhost:9200"
   username: ""
   password: ""
   index_prefix: "token_discover"
-  request_timeout_seconds : 10
-  bulk_workers: 4 # ES bulk 写入worker数量
-  bulk_batch_size: 500 # ES每批最多写入的文档数量
-  bulk_flush_interval_ms: 1000 # ES写入最长等待时间 
+  request_timeout_seconds: 10
+  bulk_workers: 4
+  bulk_batch_size: 500
+  bulk_flush_interval_ms: 1000
 
 chains:
- -name: "BaseSepolia"
- network: "base-sepolia"
- type: "evm"
- chain_id: 84532
- enabled: true
- start_block: 0 # 没有cursor的时候从哪里开始扫
- confirmations: 3
- chunk_size: 500 # 每次eth_getLogs拿多少块
- rpc:
-  urls:
-    - "https://base-sepolia.infura.io/v3/c8b8880b688449e098c268f568bf7700"
-  timeout_second: 30
-  max_concurrernt_requests: 20 # 最大并发RPC请求数量
-  requests_per_second: 30 # RPC请求限制 防止429
-  retry_max: 5
-  retry_base_delay_ms: 500
-  retry_max_delay_seconds: 30
+  - name: "BaseSepolia"
+    network: "base-sepolia"
+    type: "evm"
+    chain_id: 84532
+    enabled: true
 
+    # 没有 cursor 时从这里开始扫。
+    # 测试阶段如果从 0 开始会追很久，可以改成想测试的最近区块。
+    start_block: 43823419
+
+    # 轻量级 reorg 防护：只扫 latest - confirmations 之前的块。
+    confirmations: 3
+
+    # 每个 eth_getLogs 查询覆盖多少块。
+    chunk_size: 500
+
+    rpc:
+      urls:
+        - "https://base-sepolia.drpc.org"
+      timeout_seconds: 30
+      max_concurrent_requests: 20
+      requests_per_second: 15
+      retry_max: 5
+      retry_base_delay_ms: 500
+      retry_max_delay_seconds: 30
+
+    source:
+      name: "b20-created-source"
+
+      specs:
+        - addresses:
+            - "0xB20f000000000000000000000000000000000000"
+          topics:
+            - - "0xfd9bf2730513a1709722ff379a0844dfd8f997d600693c2bcc659e188bbdba0d"
+
+      max_addresses_per_query: 100
+      allow_empty_filter: false
+
+    handler:
+      fail_on_unmatched: false
+      ignore_decode_error: false
+
+      event_store:
+        batch_size: 500
+
+      decoders:
+        - type: "b20_created"
+          enabled: true
+          params:
+            factory: "0xB20f000000000000000000000000000000000000"
+            topic0: "0xfd9bf2730513a1709722ff379a0844dfd8f997d600693c2bcc659e188bbdba0d"
+            event_name: "b20_created"
+
+      filters:
+        - type: b20_creator_blacklist
+          name: b20_creator-blacklist
+          enabled: true
 
 workers:
-  fetch_workers: 10 # 拉链上数据的worker数量
-  decode_workers: 20 #解析日志/事件的worker数量
-  persist_workers: 4 # 批量写Postgre的worker数量
-  es_workers: 4 # 同步ES的worker数量
-  notify_workers: 5 # 发送通知的worker数量
-  queue_size: 10000 # pineline cannel/queue的默认容量
+  fetch_workers: 10
+  decode_workers: 20
+  persist_workers: 4
+  es_workers: 4
+  notify_workers: 5
+  queue_size: 10000
 
 batch:
-  event_batch_size: 500 # chain_events 每批最多写入数量
-  event_flush_interval_ms: 1000 # chain_events最长等待时间
-  outbox_batch_size: 200 # notification_outbox 每批处理数量
-  es_batch_size: 500 # ES同步任务批处理量
-  es_flush_interval_ms: 1000 # ES同步任务batch最长等待时间
+  event_batch_size: 500
+  event_flush_interval_ms: 1000
+
+  outbox_batch_size: 200
+  outbox_flush_interval_ms: 1000
+
+  es_batch_size: 500
+  es_flush_interval_ms: 1000
 
 notifier:
   telegram:
-    enabled: false #是否推TG
-    bot_token: ""
+    enabled: true
+    bot_token: "8678237094:AAF7Kn-IwXCqCDOBOsqoGKMoaIiJsVzcNdc"
+    chat_id: "-1003751325790"
     request_timeout_seconds: 10
-    max_concurrent_sends: 5 # 最大并发推送
+    max_concurrent_sends: 1
 
 observability:
   log_level: "info"
-  metrics: false # 预留
-  tracing: false # 预留
-
-
-
+  metrics: false
+  tracing: false
