@@ -98,7 +98,7 @@ func applyDefault(cfg *Config) {
 
 func ParseLogLevel(v string) logger.LogLevel {
 	switch v {
-	case "silence":
+	case "silent":
 		return logger.Silent
 	case "error":
 		return logger.Error

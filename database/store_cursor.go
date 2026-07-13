@@ -2,8 +2,10 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
+
 	"token-discover-demo/chains/evm"
 
 	"gorm.io/gorm"
@@ -35,11 +37,16 @@ func (s *CursorStore) GetCursor(ctx context.Context, key string) (*evm.Cursor, b
 
 	var row IndexerCursor
 
-	err := s.db.WithContext(ctx).Where("key = ?", key).First(&row).Error
+	err := s.db.WithContext(ctx).
+		Where("key = ?", key).
+		First(&row).
+		Error
+
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, false, nil
 		}
+
 		return nil, false, fmt.Errorf("get cursor key=%s: %w", key, err)
 	}
 
@@ -57,7 +64,7 @@ func (s *CursorStore) GetCursor(ctx context.Context, key string) (*evm.Cursor, b
 	return cursor, true, nil
 }
 
-func (s *CursorStore) SaveCursor(ctx context.Context, cursor *evm.Cursor) error {
+func (s *CursorStore) SaveCursor(ctx context.Context, cursor evm.Cursor) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("cursor store is nil")
 	}
@@ -93,15 +100,14 @@ func (s *CursorStore) SaveCursor(ctx context.Context, cursor *evm.Cursor) error 
 		NextBlock:   cursor.NextBlock,
 		SafeBlock:   cursor.SafeBlock,
 		LatestBlock: cursor.LatestBlock,
-
-		CreatedAt: now,
-		UpdatedAt: now,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 
-	err := s.db.WithContext(ctx).Clauses(
-		clause.OnConflict{
+	err := s.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
 			Columns: []clause.Column{
-				{Name: "Key"},
+				{Name: "key"},
 			},
 			DoUpdates: clause.Assignments(map[string]any{
 				"chain_id":   row.ChainID,
@@ -110,17 +116,20 @@ func (s *CursorStore) SaveCursor(ctx context.Context, cursor *evm.Cursor) error 
 				"monitor":    row.Monitor,
 
 				"next_block": gorm.Expr(
-					"GREATEST(indexer_cursor.next_block, EXCLUDED.next_block)",
+					"GREATEST(indexer_cursors.next_block, EXCLUDED.next_block)",
 				),
 				"safe_block": gorm.Expr(
-					"GREATEST(indexer_cursor.safe_block, EXCLUDED.safe_block)",
+					"GREATEST(indexer_cursors.safe_block, EXCLUDED.safe_block)",
 				),
 				"latest_block": gorm.Expr(
-					"GREATEST(indexer_cursor.latest_block, EXCLUDED.latest_block)",
+					"GREATEST(indexer_cursors.latest_block, EXCLUDED.latest_block)",
 				),
+
 				"updated_at": now,
 			}),
-		}).Create(&row).Error
+		}).
+		Create(&row).
+		Error
 
 	if err != nil {
 		return fmt.Errorf("save cursor key=%s next_block=%d: %w", cursor.Key, cursor.NextBlock, err)

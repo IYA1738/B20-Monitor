@@ -21,6 +21,10 @@ const (
 )
 
 const (
+	NotificationChannelTelegram = "telegram"
+)
+
+const (
 	ESOperationIndex  = "index"
 	ESOperationUpdate = "update"
 	ESOperationDelete = "delete"
@@ -117,17 +121,17 @@ type NotificationOutbox struct {
 	ID int64 `gorm:"primaryKey;autoIncrement:false"`
 
 	EventID  int64  `gorm:"not null;index"`
-	EventKey string `gorm:"not null;type:text;index"`
+	EventKey string `gorm:"not null;type:text;index;uniqueIndex:uniq_notification_outbox_delivery,priority:1"`
 
 	// Channel 例如：telegram / webhook / email / slack
-	Channel string `gorm:"not null;type:text;index"`
+	Channel string `gorm:"not null;type:text;index;uniqueIndex:uniq_notification_outbox_delivery,priority:2"`
 
 	// Target 例如：chat_id / webhook_url / email address
-	Target string `gorm:"not null;type:text;index"`
+	Target string `gorm:"not null;type:text;index;uniqueIndex:uniq_notification_outbox_delivery,priority:3"`
 
 	// MessageType 是业务自定义消息类型。
 	// 基础设施不关心它的具体含义。
-	MessageType string `gorm:"not null;type:text;index"`
+	MessageType string `gorm:"not null;type:text;index;uniqueIndex:uniq_notification_outbox_delivery,priority:4"`
 
 	Payload datatypes.JSON `gorm:"not null;type:jsonb"`
 
@@ -194,4 +198,19 @@ type ESIndexOutbox struct {
 
 func (ESIndexOutbox) TableName() string {
 	return "es_index_outbox"
+}
+
+type BlacklistAddress struct {
+	ID uint64 `gorm:"primaryKey"`
+
+	ChainID uint64 `gorm:"uniqueIndex:uidx_blacklist_chain_scope_addr;not null"`
+	Scope   string `gorm:"size:64;uniqueIndex:uidx_blacklist_chain_scope_addr;not null"`
+	Address string `gorm:"size:42;uniqueIndex:uidx_blacklist_chain_scope_addr;not null"`
+
+	Reason string `gorm:"type:text"`
+
+	Enabled bool `gorm:"index;not null;default:true"`
+
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }

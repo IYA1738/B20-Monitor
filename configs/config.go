@@ -160,6 +160,11 @@ type ChainConfig struct {
 	ChunkSize     uint64 `yaml:"chunk_size"`
 
 	RPC RPCConfig `yaml:"rpc"`
+
+	// EVM专有字段
+	Source EVMSourceConfig `yaml:"source"`
+	// EVM的业务Handler
+	Handler EVMHandlerConfig `yaml:"handler"`
 }
 
 type RPCConfig struct {
@@ -242,10 +247,12 @@ type NotifierConfig struct {
 	Telegram TelegramConfig `yaml:"telegram"`
 }
 
+// TG配置
 type TelegramConfig struct {
 	Enabled bool `yaml:"enabled"`
 
 	BotToken string `yaml:"bot_token"`
+	ChatID   string `yaml:"chat_id"`
 
 	RequestTimeoutSeconds int `yaml:"request_timeout_seconds"`
 	MaxConcurrentSends    int `yaml:"max_concurrent_sends"`
@@ -449,6 +456,10 @@ func (c *Config) applyDefault() {
 		if c.Chains[i].RPC.RetryMaxDelaySeconds <= 0 {
 			c.Chains[i].RPC.RetryMaxDelaySeconds = 30
 		}
+
+		if c.Chains[i].Handler.EventStore.BatchSize <= 0 {
+			c.Chains[i].Handler.EventStore.BatchSize = c.Batch.EventBatchSize
+		}
 	}
 
 	if c.Notifier.Telegram.RequestTimeoutSeconds <= 0 {
@@ -489,6 +500,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config chains is required")
 	}
 
+	if c.Notifier.Telegram.Enabled && c.Notifier.Telegram.ChatID == "" {
+		return fmt.Errorf("config notifier.telegram.chat_id is required when telegram is enabled")
+	}
+
 	for i, chain := range c.Chains {
 		if chain.Name == "" {
 			return fmt.Errorf("config chains[%d].name is required", i)
@@ -508,6 +523,32 @@ func (c *Config) Validate() error {
 
 		if len(chain.RPC.URLs) == 0 {
 			return fmt.Errorf("config chains[%d].rpc.urls is required", i)
+		}
+
+		if chain.Enabled && chain.Type == "evm" {
+			if chain.Source.Name == "" {
+				return fmt.Errorf("config chains[%d].source.name is required", i)
+			}
+
+			if len(chain.Source.Specs) == 0 && !chain.Source.AllowEmptyFilter {
+				return fmt.Errorf("config chains[%d].source.specs is required when allow_empty_filter=false", i)
+			}
+
+			if len(chain.Handler.Decoders) == 0 {
+				return fmt.Errorf("config chains[%d].handler.decoders is required", i)
+			}
+
+			for j, decoder := range chain.Handler.Decoders {
+				if decoder.Type == "" {
+					return fmt.Errorf("config chains[%d].handler.decoders[%d].type is required", i, j)
+				}
+			}
+
+			for j, filter := range chain.Handler.Filters {
+				if filter.Type == "" {
+					return fmt.Errorf("config chains[%d].handler.filters[%d].type is required", i, j)
+				}
+			}
 		}
 	}
 

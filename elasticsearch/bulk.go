@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -55,7 +56,7 @@ type BulkPartialError struct {
 }
 
 func (e *BulkPartialError) Error() string {
-	return fmt.Sprintf("elasticsearch bulk partial failure: failed = %d total = %d", e.Failed, e.Total)
+	return fmt.Sprintf("elasticsearch bulk partial failure: failed=%d total=%d", e.Failed, e.Total)
 }
 
 func (c *Client) Bulk(ctx context.Context, docs []BulkDocument) (*BulkResult, error) {
@@ -72,13 +73,53 @@ func (c *Client) Bulk(ctx context.Context, docs []BulkDocument) (*BulkResult, er
 
 	for i := range docs {
 		if err := validateBulkDocument(docs[i]); err != nil {
-			return nil, fmt.Errorf("invalid bulk document index = %d: %w", i, err)
+			return nil, fmt.Errorf("invalid bulk document index=%d: %w", i, err)
 		}
+
 		if err := writeBulkDocument(enc, docs[i]); err != nil {
-			return nil, fmt.Errorf("write bulk document index = %d: %w", i, err)
+			return nil, fmt.Errorf("write bulk document index=%d: %w", i, err)
 		}
 	}
 
+	resp, err := c.raw.Bulk(
+		bytes.NewReader(body.Bytes()),
+		c.raw.Bulk.WithContext(ctx),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("execute ES bulk: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read ES bulk response: %w", err)
+	}
+
+	if resp.IsError() {
+		return nil, fmt.Errorf("ES bulk http error status=%s body=%s", resp.Status(), string(raw))
+	}
+
+	result, err := parseBulkResponse(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	if result.Failed > 0 {
+		return result, &BulkPartialError{
+			Failed: result.Failed,
+			Total:  result.Total,
+		}
+	}
+
+	return result, nil
+}
+
+func normalizeBulkOperation(operation string) string {
+	operation = strings.ToLower(strings.TrimSpace(operation))
+	if operation == "" {
+		return BulkOperationIndex
+	}
+	return operation
 }
 
 func validateBulkDocument(doc BulkDocument) error {
@@ -90,10 +131,10 @@ func validateBulkDocument(doc BulkDocument) error {
 		return fmt.Errorf("document id is required")
 	}
 
-	switch doc.Operation {
+	switch normalizeBulkOperation(doc.Operation) {
 	case BulkOperationIndex, BulkOperationUpdate:
 		if len(doc.Payload) == 0 {
-			return fmt.Errorf("payload is required for operation=%s", doc.Operation)
+			return fmt.Errorf("payload is required for operation=%s", normalizeBulkOperation(doc.Operation))
 		}
 
 		if !json.Valid(doc.Payload) {
@@ -104,10 +145,13 @@ func validateBulkDocument(doc BulkDocument) error {
 	default:
 		return fmt.Errorf("unsupported bulk operation: %s", doc.Operation)
 	}
+
 	return nil
 }
 
 func writeBulkDocument(enc *json.Encoder, doc BulkDocument) error {
+	operation := normalizeBulkOperation(doc.Operation)
+
 	meta := map[string]any{
 		"_index": doc.IndexName,
 		"_id":    doc.DocumentID,
@@ -117,21 +161,22 @@ func writeBulkDocument(enc *json.Encoder, doc BulkDocument) error {
 		meta["routing"] = doc.Routing
 	}
 
-	if doc.Operation == BulkOperationUpdate && doc.RetryOnConflict > 0 {
+	if operation == BulkOperationUpdate && doc.RetryOnConflict > 0 {
 		meta["retry_on_conflict"] = doc.RetryOnConflict
 	}
 
 	action := map[string]any{
-		doc.Operation: meta,
+		operation: meta,
 	}
 
 	if err := enc.Encode(action); err != nil {
 		return err
 	}
 
-	switch doc.Operation {
+	switch operation {
 	case BulkOperationIndex:
 		return enc.Encode(doc.Payload)
+
 	case BulkOperationUpdate:
 		updateBody := map[string]any{
 			"doc": doc.Payload,
@@ -210,6 +255,7 @@ func parseBulkResponse(raw []byte) (*BulkResult, error) {
 			result.Items = append(result.Items, parsed)
 		}
 	}
+
 	return result, nil
 }
 

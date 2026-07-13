@@ -93,6 +93,18 @@ func (g *Generator) NextID(ctx context.Context) (int64, error) {
 			return 0, fmt.Errorf("wait clock recovery: %w", err)
 		}
 		currentMillis = nextMillis
+	}
+
+	if currentMillis == g.lastMillis {
+		g.sequence++
+		if g.sequence > sequenceMax {
+			nextMillis, err := g.waitNextMillis(ctx, g.lastMillis)
+			if err != nil {
+				return 0, fmt.Errorf("wait next millisecond: %w", err)
+			}
+			currentMillis = nextMillis
+			g.sequence = 0
+		}
 	} else {
 		g.sequence = 0
 	}

@@ -26,6 +26,7 @@ func Migrate(ctx context.Context, gdb *gorm.DB) error {
 			&ChainEvent{},
 			&NotificationOutbox{},
 			&ESIndexOutbox{},
+			&BlacklistAddress{},
 		); err != nil {
 			return fmt.Errorf("auto migrate database: %w", err)
 		}

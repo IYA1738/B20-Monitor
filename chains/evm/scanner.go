@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
@@ -77,6 +78,8 @@ type ScanBatch struct {
 	LatestBlock uint64
 
 	LogCount int
+
+	TxSenders map[common.Hash]common.Address
 }
 type chunkJob struct {
 	Index     int
@@ -265,11 +268,19 @@ func (s *Scanner) scanOnce(ctx context.Context) (bool, error) {
 
 	nextBlock := s.cfg.StartBlock
 
-	if exists && cursor != nil {
+	// 第一次启动时 cursor是nil, 后面的progressed := advancedNextBlock > cursor.NextBlock里 cursor会调用空指针
+	// if exists && cursor != nil {
+	// 	nextBlock = cursor.NextBlock
+	// }
+
+	if exists {
+		if cursor == nil {
+			return false, fmt.Errorf("cursor key=%s exists but cursor is nil", cursorKey)
+		}
 		nextBlock = cursor.NextBlock
 	}
 
-	// 扫到安全区块了，新的区块确认数太少， 先不扫
+	// 扫到区块了，但是区块确认数太少， 先不扫
 	if nextBlock > safeBlock {
 		log.Printf(
 			"[evm-scanner] caught up chain=%s network=%s monitor=%s next=%d safe=%d latest=%d",
@@ -293,7 +304,7 @@ func (s *Scanner) scanOnce(ctx context.Context) (bool, error) {
 
 	advancedNextBlock, committedChunks, committedLogs, firstErr := s.computeCommitPoint(nextBlock, chunks, results)
 
-	progressed := advancedNextBlock > cursor.NextBlock
+	progressed := advancedNextBlock > nextBlock
 
 	if progressed {
 		nextCursor := Cursor{
@@ -385,6 +396,12 @@ func minInt(a int, b int) int {
 	return b
 }
 
+type logIdentity struct {
+	ChainID  uint64
+	TxHash   common.Hash
+	LogIndex uint
+}
+
 func (s *Scanner) processChunk(ctx context.Context, workerID int, job chunkJob, safeBlock uint64, latestBlock uint64) chunkResult {
 	startedAt := time.Now()
 
@@ -402,7 +419,7 @@ func (s *Scanner) processChunk(ctx context.Context, workerID int, job chunkJob, 
 	}
 
 	var allLogs []types.Log
-
+	var seen = make(map[logIdentity]struct{})
 	for queryIndex, query := range queries {
 		query.FromBlock = new(big.Int).SetUint64(job.FromBlock)
 		query.ToBlock = new(big.Int).SetUint64(job.ToBlock)
@@ -421,7 +438,29 @@ func (s *Scanner) processChunk(ctx context.Context, workerID int, job chunkJob, 
 			result.FinishedAt = time.Now()
 			return result
 		}
-		allLogs = append(allLogs, logs...)
+
+		for _, log := range logs {
+			logID := logIdentity{
+				ChainID:  s.cfg.ChainID,
+				TxHash:   log.TxHash,
+				LogIndex: log.Index,
+			}
+
+			if _, ok := seen[logID]; ok {
+				continue
+			}
+			seen[logID] = struct{}{}
+			allLogs = append(allLogs, log)
+		}
+	}
+
+	txSenders, err := s.loadTxSenders(ctx, allLogs)
+
+	if err != nil {
+		result.Err = fmt.Errorf("worker=%d load tx senders from=%d to=%d: %w", workerID, job.FromBlock, job.ToBlock, err)
+		result.LogCount = len(allLogs)
+		result.FinishedAt = time.Now()
+		return result
 	}
 
 	batch := ScanBatch{
@@ -434,6 +473,7 @@ func (s *Scanner) processChunk(ctx context.Context, workerID int, job chunkJob, 
 		SafeBlock:   safeBlock,
 		LatestBlock: latestBlock,
 		LogCount:    len(allLogs),
+		TxSenders:   txSenders,
 	}
 
 	if err := s.handler.HandleLogs(ctx, batch, allLogs); err != nil {
@@ -459,6 +499,29 @@ func (s *Scanner) processChunk(ctx context.Context, workerID int, job chunkJob, 
 	)
 
 	return result
+}
+
+func (s *Scanner) loadTxSenders(ctx context.Context, logs []types.Log) (map[common.Hash]common.Address, error) {
+	out := make(map[common.Hash]common.Address)
+
+	for _, rawLog := range logs {
+		if rawLog.TxHash == (common.Hash{}) {
+			continue
+		}
+
+		if _, ok := out[rawLog.TxHash]; ok {
+			continue
+		}
+
+		from, err := s.rpc.TransactionSender(ctx, rawLog.TxHash, s.cfg.ChainID)
+
+		if err != nil {
+			return nil, fmt.Errorf("tx=%s: %w", rawLog.TxHash.Hex(), err)
+		}
+		out[rawLog.TxHash] = from
+	}
+
+	return out, nil
 }
 
 func (s *Scanner) planChunks(nextBlock uint64, safeBlock uint64) []chunkJob {

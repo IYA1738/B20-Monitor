@@ -3,10 +3,12 @@ package evm
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"golang.org/x/time/rate"
@@ -46,7 +48,7 @@ type rpcEndpoint struct {
 
 func applyRPCDefault(cfg *RPCConfig) {
 	if cfg.Timeout <= 0 {
-		cfg.Timeout = 10 * time.Millisecond
+		cfg.Timeout = 3 * time.Second
 	}
 
 	if cfg.MaxConcurrentRequests <= 0 {
@@ -173,6 +175,40 @@ func (c *RPCClient) FilterLogs(ctx context.Context, query ethereum.FilterQuery) 
 	if err != nil {
 		return nil, err
 	}
+	return out, nil
+}
+
+func (c *RPCClient) TransactionSender(ctx context.Context, txHash common.Hash, chainID uint64) (common.Address, error) {
+	if txHash == (common.Hash{}) {
+		return common.Address{}, fmt.Errorf("tx hash is nil")
+	}
+
+	if chainID == 0 {
+		return common.Address{}, fmt.Errorf("chain id is nil")
+	}
+
+	var out common.Address
+
+	err := c.do(ctx, func(ctx context.Context, ep *rpcEndpoint) error {
+		tx, _, err := ep.eth.TransactionByHash(ctx, txHash)
+		if err != nil {
+			return err
+		}
+
+		signer := types.LatestSignerForChainID(new(big.Int).SetUint64(chainID))
+
+		from, err := types.Sender(signer, tx)
+		if err != nil {
+			return err
+		}
+		out = from
+		return nil
+	})
+
+	if err != nil {
+		return common.Address{}, fmt.Errorf("get tx sender tx=%s: %w", txHash.Hex(), err)
+	}
+
 	return out, nil
 }
 

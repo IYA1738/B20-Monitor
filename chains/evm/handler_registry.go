@@ -253,3 +253,40 @@ func DecodeComponentParams(cfg ComponentConfig, out any) error {
 
 	return nil
 }
+
+func (r *ComponentRegistry) BuildPipelineHandler(
+	ctx context.Context,
+	handlerCfg PipelineHandlerConfig,
+	componentsCfg HandlerComponentsConfig,
+	sink EventSink,
+) (*PipelineHandler, error) {
+	if r == nil {
+		return nil, fmt.Errorf("component registry is nil")
+	}
+
+	if sink == nil {
+		return nil, fmt.Errorf("event sink is nil")
+	}
+
+	decoders, err := r.BuildDecoders(ctx, componentsCfg.Decoders)
+	if err != nil {
+		return nil, fmt.Errorf("build decoders: %w", err)
+	}
+
+	filters, err := r.BuildFilters(ctx, componentsCfg.Filters)
+	if err != nil {
+		return nil, fmt.Errorf("build filters: %w", err)
+	}
+
+	handler, err := NewPipelineHandler(
+		handlerCfg,
+		decoders,
+		filters,
+		sink,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("new pipeline handler: %w", err)
+	}
+
+	return handler, nil
+}
