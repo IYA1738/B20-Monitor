@@ -1,5 +1,11 @@
-go.mod
-go.sum
-config.json
+/config.json
+/configs/local.yaml
 
-configs/local.yaml
+.env
+.env.*
+!.env.example
+
+*.log
+tmp/
+dist/
+bin/
